@@ -15,8 +15,9 @@
 #   7. Runs `ansible-pull` once. That run installs a systemd timer; the
 #      timer takes over from then on.
 #
-# Usage:
-#   curl -fsSL https://raw.githubusercontent.com/stfbln/home-lab-server-bootstrap/main/bootstrap.sh | sudo bash
+# Usage (do NOT use `curl | sudo bash` — sudo's use_pty defaults break
+# interactive prompts inside a piped script):
+#   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/stfbln/home-lab-server-bootstrap/main/bootstrap.sh)"
 
 set -euo pipefail
 
