@@ -26,6 +26,8 @@ SSH_KEY="/root/.ssh/home_lab_server_ed25519"
 SSH_CONFIG="/root/.ssh/config"
 SSH_CONFIG_BEGIN="# BEGIN home-lab-server-bootstrap"
 SSH_CONFIG_END="# END home-lab-server-bootstrap"
+STATE_DIR="/var/lib/home-lab-server"
+STATE_FILE="$STATE_DIR/bootstrap.state"
 
 # When piped from curl, stdin is the pipe; read from the controlling tty instead.
 # The subshell test avoids killing the parent shell under `set -e` if /dev/tty
@@ -64,18 +66,30 @@ hr
 printf '  %sHome Lab Server Bootstrap%s\n' "$BOLD" "$RESET"
 hr
 
-# ---------- 1. repo URL prompt (loops until non-empty) ---------------
+# ---------- 1. repo URL: reuse from state file, else prompt ----------
 step "Repository URL"
-while true; do
-  printf '  Enter the SSH URL of the private config repo\n'
-  printf '  (e.g. %sgit@github.com:you/home-lab-server.git%s): ' "$DIM" "$RESET"
-  read -r REPO_URL || true
-  if [[ -n "${REPO_URL:-}" ]]; then
-    break
+REPO_URL=""
+if [[ -f "$STATE_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$STATE_FILE"
+  REPO_URL="${BOOTSTRAP_REPO_URL:-}"
+  if [[ -n "$REPO_URL" ]]; then
+    ok "Reusing repo from previous bootstrap: $REPO_URL"
+    info "To change repo, run offboard.sh first."
   fi
-  warn "Repo URL is required — try again."
-done
-ok "Using $REPO_URL"
+fi
+if [[ -z "$REPO_URL" ]]; then
+  while true; do
+    printf '  Enter the SSH URL of the private config repo\n'
+    printf '  (e.g. %sgit@github.com:you/home-lab-server.git%s): ' "$DIM" "$RESET"
+    read -r REPO_URL || true
+    if [[ -n "${REPO_URL:-}" ]]; then
+      break
+    fi
+    warn "Repo URL is required — try again."
+  done
+  ok "Using $REPO_URL"
+fi
 
 # ---------- 2. install packages --------------------------------------
 step "Installing packages"
@@ -161,7 +175,19 @@ else
   ok "Cloned repo"
 fi
 
-# ---------- 7. run ansible-pull once --------------------------------
+# ---------- 7. persist state so future re-runs skip the prompt -------
+install -d -m 0755 "$STATE_DIR"
+cat > "$STATE_FILE" <<EOF
+# Managed by bootstrap.sh — delete via offboard.sh, not by hand.
+BOOTSTRAP_VERSION=1
+BOOTSTRAP_REPO_URL="$REPO_URL"
+BOOTSTRAP_HOSTNAME="$(hostname)"
+BOOTSTRAP_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+EOF
+chmod 0644 "$STATE_FILE"
+ok "Wrote state to $STATE_FILE"
+
+# ---------- 8. run ansible-pull once --------------------------------
 step "Running ansible-pull (this installs the systemd timer)"
 if /usr/bin/ansible-pull \
     --url "$REPO_URL" \
