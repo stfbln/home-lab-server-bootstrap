@@ -81,7 +81,7 @@ The bootstrap assumes the private repo has this shape:
 <private-repo>/
 ├── ansible.cfg
 └── ansible/
-    ├── inventory/hosts.yml         # targeting localhost
+    ├── inventory/hosts.yml         # host(s) with ansible_connection: local
     ├── local.yml                   # entry-point playbook
     └── roles/
         └── ansible_pull/           # installs & enables the systemd timer
