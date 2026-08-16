@@ -3,16 +3,21 @@
 # Bootstrap a fresh Ubuntu host into a self-managing ansible-pull node.
 #
 # What this script does:
-#   1. Installs git, ansible, openssh-client.
-#   2. Generates a dedicated SSH key at /root/.ssh/home_lab_server_ed25519.
-#   3. Writes an idempotent /root/.ssh/config block so root always uses
+#   1. Prompts for the private repo URL (or reuses it from a prior run).
+#   2. Optionally sets the machine hostname. ansible-pull uses the
+#      hostname to pick the matching entry from the inventory, so this
+#      is a one-time setup done here (not from ansible itself, to avoid
+#      the chicken-and-egg of the playbook renaming its own targeting key).
+#   3. Installs git, ansible, openssh-client.
+#   4. Generates a dedicated SSH key at /root/.ssh/home_lab_server_ed25519.
+#   5. Writes an idempotent /root/.ssh/config block so root always uses
 #      that key for github.com.
-#   4. Tries to reach the private repo already. If it works, skips the
+#   6. Tries to reach the private repo already. If it works, skips the
 #      GitHub deploy-key walkthrough entirely.
-#   5. Otherwise pauses with instructions to register the key as a
+#   7. Otherwise pauses with instructions to register the key as a
 #      read-only deploy key, then verifies in a retry loop.
-#   6. Clones the private repo to /opt/home-lab-server.
-#   7. Runs `ansible-pull` once. That run installs a systemd timer; the
+#   8. Clones the private repo to /opt/home-lab-server.
+#   9. Runs `ansible-pull` once. That run installs a systemd timer; the
 #      timer takes over from then on.
 #
 # Usage (do NOT use `curl | sudo bash` — sudo's use_pty defaults break
@@ -91,14 +96,48 @@ if [[ -z "$REPO_URL" ]]; then
   ok "Using $REPO_URL"
 fi
 
-# ---------- 2. install packages --------------------------------------
+# ---------- 2. hostname (one-time; ansible-pull targets by hostname) -
+step "Hostname"
+CURRENT_HOSTNAME="$(hostname)"
+info "Current hostname: $CURRENT_HOSTNAME"
+printf '  ansible-pull uses the hostname to pick the matching inventory\n'
+printf '  entry (ansible/inventory/hosts.yml). Change it? [y/N]: '
+read -r CHANGE_HOSTNAME || true
+if [[ "${CHANGE_HOSTNAME:-}" =~ ^[Yy]$ ]]; then
+  while true; do
+    printf '  New hostname: '
+    read -r NEW_HOSTNAME || true
+    if [[ -z "${NEW_HOSTNAME:-}" ]]; then
+      warn "Hostname is required — try again (or Ctrl+C to abort)."
+      continue
+    fi
+    # RFC 1123 single label: start/end alphanumeric, dashes allowed inside, ≤63 chars.
+    if [[ ! "$NEW_HOSTNAME" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]]; then
+      warn "Invalid hostname — must be ≤63 chars, alphanumerics and dashes, not starting/ending with a dash."
+      continue
+    fi
+    break
+  done
+  hostnamectl set-hostname "$NEW_HOSTNAME"
+  # Keep /etc/hosts in sync so `sudo` and local resolvers don't warn.
+  if grep -qE '^127\.0\.1\.1[[:space:]]' /etc/hosts; then
+    sed -i "s/^127\.0\.1\.1[[:space:]].*/127.0.1.1\t$NEW_HOSTNAME/" /etc/hosts
+  else
+    printf '127.0.1.1\t%s\n' "$NEW_HOSTNAME" >> /etc/hosts
+  fi
+  ok "Hostname set to $NEW_HOSTNAME"
+else
+  ok "Keeping current hostname: $CURRENT_HOSTNAME"
+fi
+
+# ---------- 3. install packages --------------------------------------
 step "Installing packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq git ansible openssh-client ca-certificates
 ok "Installed git, ansible, openssh-client"
 
-# ---------- 3. dedicated SSH key -------------------------------------
+# ---------- 4. dedicated SSH key -------------------------------------
 step "Preparing SSH deploy key"
 install -d -m 0700 /root/.ssh
 if [[ -f "$SSH_KEY" ]]; then
@@ -108,7 +147,7 @@ else
   ok "Generated $SSH_KEY"
 fi
 
-# ---------- 4. ssh config entry (idempotent via markers) -------------
+# ---------- 5. ssh config entry (idempotent via markers) -------------
 touch "$SSH_CONFIG"
 chmod 600 "$SSH_CONFIG"
 if grep -qF "$SSH_CONFIG_BEGIN" "$SSH_CONFIG"; then
@@ -127,7 +166,7 @@ EOF
   ok "Wrote SSH config for github.com → $SSH_KEY"
 fi
 
-# ---------- 5. check repo access; only walk through GitHub if needed -
+# ---------- 6. check repo access; only walk through GitHub if needed -
 check_repo_access() {
   GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10" \
     git ls-remote --quiet "$REPO_URL" HEAD >/dev/null 2>&1
@@ -163,7 +202,7 @@ else
   done
 fi
 
-# ---------- 6. clone repo --------------------------------------------
+# ---------- 7. clone repo --------------------------------------------
 step "Cloning private repo to $REPO_DIR"
 if [[ -d "$REPO_DIR/.git" ]]; then
   git -C "$REPO_DIR" remote set-url origin "$REPO_URL"
@@ -175,7 +214,7 @@ else
   ok "Cloned repo"
 fi
 
-# ---------- 7. persist state so future re-runs skip the prompt -------
+# ---------- 8. persist state so future re-runs skip the prompt -------
 install -d -m 0755 "$STATE_DIR"
 cat > "$STATE_FILE" <<EOF
 # Managed by bootstrap.sh — delete via offboard.sh, not by hand.
@@ -187,7 +226,7 @@ EOF
 chmod 0644 "$STATE_FILE"
 ok "Wrote state to $STATE_FILE"
 
-# ---------- 8. run ansible-pull once --------------------------------
+# ---------- 9. run ansible-pull once --------------------------------
 step "Running ansible-pull (this installs the systemd timer)"
 if /usr/bin/ansible-pull \
     --url "$REPO_URL" \
